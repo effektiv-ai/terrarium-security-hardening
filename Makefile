@@ -12,18 +12,24 @@ SHELLFLAGS := -eu -o pipefail -c
 # ---------------- Configuration ----------------
 # Keys management
 KEYS_SCRIPT ?= docker/vendor-keys/refresh-vendor-keys.sh
-ENV_FILE    ?= docker/vendor-keys/vendor-keys.env  # optional: where to stash shell-style pins
+# Optional: where to stash shell-style pins
+ENV_FILE    ?= docker/vendor-keys/vendor-keys.env
 
 # Docker build/test
 DOCKERFILE       ?= docker/Dockerfile.terrarium
 DOCKER_CONTEXT   ?= docker
 IMAGE            ?= terrarium
 TAG              ?= latest
-TEST_STAGE       ?= test                     # Dockerfile stage that runs tests
-TEST_TAG         ?= test                     # Tag for test-stage image: $(IMAGE):$(TEST_TAG)
-CONTAINER_NAME   ?= terrarium                # Used by docker-test-exec and as a default name
-TEST_REPORT_DIR  ?= test-reports             # Host folder for JUnit/XML reports
-BATS_TEST_PATH   ?= /home/terrarium/tests    # In-container path to your bats tests
+# Dockerfile stage that runs tests
+TEST_STAGE       ?= test
+# Tag for test-stage image: $(IMAGE):$(TEST_TAG)
+TEST_TAG         ?= test
+# Used by docker-test-exec and as a default name
+CONTAINER_NAME   ?= terrarium
+# Host folder for JUnit/XML reports
+TEST_REPORT_DIR  ?= test-reports
+# In-container path to your bats tests
+BATS_TEST_PATH   ?= /home/terrarium/tests
 
 # Docker cache control
 # Usage: make docker-build NO_CACHE=1
@@ -53,7 +59,7 @@ define assert_file
 	test -f "$(1)" || { printf "$(RED)Error: missing file: $(1)$(RESET)\n" >&2; exit 1; }
 endef
 
-.PHONY: help verify-keys print-keys write-keys check-keys docker-build docker-build-test docker-test docker-test-exec sbom
+.PHONY: help verify-keys print-keys write-keys check-keys docker-build docker-build-test docker-test docker-test-exec test sbom
 
 # ================== Meta ==================
 help: ## Show this help (default)
@@ -107,6 +113,8 @@ docker-build: ## Build the runtime image: $(IMAGE):$(TAG) from $(DOCKERFILE)
 		-f "$(DOCKERFILE)" $(DOCKER_CONTEXT)
 	@printf "$(GREEN)Built $(IMAGE):$(TAG)$(RESET)\n"
 
+test: docker-build-test ## Alias: build the test stage (runs bats at build-time); fails if bats fails
+
 docker-build-test: ## Build the test stage (runs bats at build-time) -> $(IMAGE):$(TEST_TAG); fails if bats fails
 	@$(assert_docker)
 	@$(call assert_file,$(DOCKERFILE))
@@ -144,8 +152,26 @@ docker-test-exec: ## Run bats *inside an already-running* container $(CONTAINER_
 SBOM_IMAGE ?= $(IMAGE):$(TAG)
 SBOM_DIR   ?= artifacts
 
+# Syft: pinned version + SHA256 for reproducible, tamper-evident installs.
+# To upgrade: update SYFT_VERSION and SYFT_SHA256 from the checksums file at
+#   https://github.com/anchore/syft/releases/download/v<VERSION>/syft_<VERSION>_checksums.txt
+SYFT_VERSION ?= 1.42.3
+SYFT_SHA256  ?= 0d6be741479eddd2c8644a288990c04f3df0d609bbc1599a005532a9dff63509
+SYFT_BIN_DIR ?= /usr/local/bin
+
 sbom: ## Generate SBOM for $(SBOM_IMAGE) using Syft (SPDX JSON + human-readable table)
-	@command -v syft >/dev/null 2>&1 || { printf "$(RED)Error: syft is not installed. See https://github.com/anchore/syft$(RESET)\n" >&2; exit 127; }
+	@command -v syft >/dev/null 2>&1 || { \
+		printf "$(YELLOW)syft not found — installing v$(SYFT_VERSION) with checksum verification...$(RESET)\n"; \
+		tmpdir=$$(mktemp -d) && \
+		curl -sSfL "https://github.com/anchore/syft/releases/download/v$(SYFT_VERSION)/syft_$(SYFT_VERSION)_linux_amd64.tar.gz" \
+			-o "$$tmpdir/syft.tar.gz" && \
+		printf '%s  %s\n' "$(SYFT_SHA256)" "$$tmpdir/syft.tar.gz" | sha256sum -c - >/dev/null 2>&1 || \
+			{ printf "$(RED)Error: SHA256 checksum verification failed for syft v$(SYFT_VERSION)$(RESET)\n" >&2; rm -rf "$$tmpdir"; exit 127; } && \
+		tar -xzf "$$tmpdir/syft.tar.gz" -C "$$tmpdir" syft && \
+		install -m 0755 "$$tmpdir/syft" "$(SYFT_BIN_DIR)/syft" && \
+		rm -rf "$$tmpdir" && \
+		printf "$(GREEN)Installed syft v$(SYFT_VERSION)$(RESET)\n"; \
+	}
 	@$(assert_docker)
 	@mkdir -p "$(SBOM_DIR)"
 	@printf "$(YELLOW)Generating SBOM for $(SBOM_IMAGE)...$(RESET)\n"

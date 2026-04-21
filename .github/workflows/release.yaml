@@ -16,10 +16,6 @@ on:
       tag:
         description: "Release tag (e.g. v4.7.0)"
         required: true
-      update_latest:
-        description: "Update the 'latest' tag (auto: false for pre-releases)"
-        type: boolean
-        default: true
       debug_context:
         description: "Dump GitHub contexts for debugging"
         type: boolean
@@ -52,7 +48,7 @@ jobs:
         with:
           egress-policy: audit
 
-      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           fetch-depth: 0
           fetch-tags: true
@@ -114,12 +110,14 @@ jobs:
       # Gate: build through the test stage — bats must pass
       - name: Build & run tests
         run: |
+          GEMFILE_HASH=$(sha256sum docker/Gemfile.lock | cut -d' ' -f1)
           for attempt in 1 2 3; do
             echo "::group::Attempt $attempt of 3"
             docker buildx build \
               --file docker/Dockerfile.terrarium \
               --target test \
               --platform ${{ matrix.platform }} \
+              --build-arg GEMFILE_HASH="${GEMFILE_HASH}" \
               --cache-from type=gha,scope=${{ matrix.platform }} \
               --cache-to type=gha,mode=max,scope=${{ matrix.platform }} \
               ./docker \
@@ -138,15 +136,17 @@ jobs:
           else
             TAG="${{ inputs.tag }}"
           fi
+          GEMFILE_HASH=$(sha256sum docker/Gemfile.lock | cut -d' ' -f1)
 
           for attempt in 1 2 3; do
             echo "::group::Attempt $attempt of 3"
             docker buildx build \
               --file docker/Dockerfile.terrarium \
-              --target final \
+              --target test \
               --platform ${{ matrix.platform }} \
               --push \
               --sbom=true \
+              --build-arg GEMFILE_HASH="${GEMFILE_HASH}" \
               --cache-from type=gha,scope=${{ matrix.platform }} \
               --tag "${IMAGE}:${TAG}${{ matrix.suffix }}" \
               ./docker \
@@ -170,7 +170,7 @@ jobs:
         with:
           egress-policy: audit
 
-      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
       - uses: ./.github/actions/dump-context
         if: github.event.inputs.debug_context == 'true'
@@ -193,10 +193,6 @@ jobs:
             IS_PRERELEASE="false"
             # Auto-detect pre-release from tag name
             if [[ "$TAG" =~ -(pre|alpha|beta|rc) ]]; then
-              IS_PRERELEASE="true"
-            fi
-            # Allow manual override via update_latest input
-            if [ "${{ inputs.update_latest }}" = "false" ]; then
               IS_PRERELEASE="true"
             fi
           fi
